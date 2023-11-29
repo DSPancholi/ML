@@ -1,0 +1,299 @@
+---
+title: "Machine Learning"
+output:
+  html_document: default
+  word_document: default
+date: "2023-11-07"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#### Import Packages 
+
+```{r message=FALSE, warning=FALSE}
+library(ggplot2)
+library(dplyr)
+library(ggpubr)
+library(GGally)
+#install.packages("umap")
+library(umap)
+#install.packages("Rtsne")
+library(Rtsne)
+library(caret)
+#install.packages("neuralnet")
+library(neuralnet)
+#install.packages("Metrics")
+library(Metrics)
+```
+
+#### Import Data
+
+```{r}
+wine <- read.csv("wine/wine.csv", check.names = FALSE)
+wine$Target <- wine$Wine
+wine$Wine <- NULL
+#data overview
+head(wine)
+```
+
+```{r}
+str(wine)
+```
+
+```{r}
+data.frame((colSums(is.na(wine))))
+```
+
+##### Correlation
+
+```{r message=FALSE, warning=FALSE}
+ggcorr(wine, geom = "blank", label = TRUE, 
+       hjust = 0.9, layout.exp = 2) +
+  geom_point(size = 8, aes(color = coefficient > 0, 
+                           alpha = abs(coefficient) > 0.60)) +
+  scale_alpha_manual(values = c("TRUE" = 0.25, "FALSE" = 0)) +
+  guides(color = FALSE, alpha = FALSE) +ggtitle("Correlation scores between different wine attributes")
+```
+
+##### Scale the data
+
+```{r}
+data <- as.data.frame(scale(wine[, -ncol(wine)]))
+data$Target <- wine$Target
+#head(data)
+```
+
+##### PCA
+  
+```{r}
+set.seed(42)
+pca_r <- prcomp(data[, -ncol(data)], scale = TRUE)  # Exclude target
+summary(pca_r)
+```
+
+```{r}
+screeplot(pca_r)
+```
+
+  
+```{r}
+biplot(pca_r)
+```
+
+#### UMAP
+
+```{r}
+set.seed(24)
+w.umap = umap(data[, -ncol(data)])
+w.labels = as.factor(data$Target)
+data$Target <- as.factor(data$Target)
+#head(w.umap$layout, 3)
+set.seed(24)
+umapdf <- data.frame(x = w.umap$layout[,1],
+                 y = w.umap$layout[,2],
+                 WineQuality = w.labels)
+ggplot(umapdf, aes(x, y, colour = WineQuality)) + geom_point(size=3) + 
+  ggtitle("UMAP") + 
+  stat_chull(aes(color = w.labels, fill = WineQuality), geom = "polygon", alpha = 0.01)
+```
+
+##### t-SNE
+
+```{r}
+df = data[, -ncol(data)]
+tsne <- Rtsne(df[!duplicated(df), ], dims = 2,
+            perplexity=50, verbose=TRUE,
+            max_iter = 500)
+```
+
+```{r}
+#visualization
+rbPal <- colorRampPalette(c('skyblue', 'yellow'))
+set.seed(42)
+df$Col_qual <- rbPal(8)[as.numeric(cut(as.numeric(data$Target),breaks = 5))]
+#plot by quality
+legend_labels <- levels(data$Target)
+legend_colors <- unique(data$Target)
+plot(tsne$Y, col=data$Target, pch=16, main = "tSNE coloured by quality")
+legend("topright", legend = legend_labels, fill = legend_colors, title = "Quality")
+```
+
+
+```{r}
+# Splitting and Scaling the data
+samplesize = 0.70 * nrow(data)
+set.seed(1)
+index = sample( seq_len ( nrow ( data ) ), size = samplesize )
+# Use the scaled data: neural nets are very dependent upon optimization using gradient methods
+trainNN = data[index , ]
+testNN = data[-index , ]
+
+```
+
+
+#### Simple Model
+
+```{r}
+set.seed(4)
+k <- 10
+average_accuracies <- numeric(k) 
+prev_accuracy <- 0
+grid <- expand.grid(size = 1, decay = 0.1)
+
+for (i in 1:k) {
+  index <- sample(1:nrow(data), round(0.9 * nrow(data)))
+  train.cv <- data[index, ]
+  test.cv <- data[-index, ]
+
+  nn <- train(Target ~ ., data = train.cv, method='nnet', trace = FALSE,
+  tuneGrid = grid)
+
+  # Calculate accuracy on the validation set
+  predictions <- predict(nn, test.cv)
+  #predictions <- factor(max.col(predictions))
+  perf <- confusionMatrix(predictions, test.cv$Target)
+  accuracy <- accuracy(predictions, test.cv$Target)
+  #paste(accuracy)
+  print(paste("Fold:", i))
+  #print(i)
+  print(round(perf$overall['Accuracy'], 2))
+  #save accuracies
+  average_accuracies[i] <- accuracy
+  average_accuracies <- average_accuracies[average_accuracies != 0]
+  # Check if accuracy drops (early stopping) and stop training
+  if (accuracy < prev_accuracy) {
+    break
+  }
+
+  prev_accuracy <- accuracy
+}
+
+```
+
+```{r}
+nn
+```
+
+
+```{r}
+#average accuracy
+average_accuracy_simple <- mean(average_accuracies)
+paste("Average Accuracy:", round(average_accuracy_simple, 2))
+```
+
+
+##### Increasing Model Complexity
+
+```{r}
+set.seed(4)
+k <- 10
+average_accuracies <- numeric(k) 
+prev_accuracy <- 0
+# Set up a grid of hyperparameters to search over
+grid <- expand.grid(size = c(2, 5, 10), decay = 0.01)
+
+for (i in 1:k) {
+  index <- sample(1:nrow(data), round(0.9 * nrow(data)))
+  train.cv <- data[index, ]
+  test.cv <- data[-index, ]
+
+  nn <- train(Target ~ ., data = train.cv, method='nnet', trace = FALSE,
+  tuneGrid = grid)
+
+  # Calculate accuracy on the validation set
+  predictions <- predict(nn, test.cv)
+  #predictions <- factor(max.col(predictions))
+  perf <- confusionMatrix(predictions, test.cv$Target)
+  accuracy <- accuracy(predictions, test.cv$Target)
+  #paste(accuracy)
+  print(paste("Fold:", i))
+  print(round(perf$overall['Accuracy'], 2))
+  #save accuracies
+  average_accuracies[i] <- accuracy
+  average_accuracies <- average_accuracies[average_accuracies != 0]
+  # Check if accuracy drops (early stopping) and stop training
+  if (accuracy < prev_accuracy) {
+    break
+  }
+
+  prev_accuracy <- accuracy
+}
+
+```
+
+```{r}
+nn
+```
+
+
+```{r}
+#average accuracy
+average_accuracy_complex <- mean(average_accuracies)
+paste("Average Accuracy:", round(average_accuracy_complex, 2))
+```
+
+##### Regularization
+
+```{r}
+set.seed(4)
+k <- 10
+average_accuracies <- numeric(k) 
+prev_accuracy <- 0
+# Set up a grid of hyperparameters to search over include regularization
+grid <- expand.grid(size = 10, decay = c(0.001, 0.01, 0.1))
+
+for (i in 1:k) {
+  index <- sample(1:nrow(data), round(0.9 * nrow(data)))
+  train.cv <- data[index, ]
+  test.cv <- data[-index, ]
+
+  nn <- train(Target ~ ., data = train.cv, method='nnet', trace = FALSE,
+  tuneGrid = grid)
+
+  # Calculate accuracy on the validation set
+  predictions <- predict(nn, test.cv)
+  #predictions <- factor(max.col(predictions))
+  perf <- confusionMatrix(predictions, test.cv$Target)
+  accuracy <- accuracy(predictions, test.cv$Target)
+  #paste(accuracy)
+  print(paste("Fold:", i))
+  print(round(perf$overall['Accuracy'], 2))
+  #save accuracies
+  average_accuracies[i] <- accuracy
+  average_accuracies <- average_accuracies[average_accuracies != 0]
+  # Check if accuracy drops (early stopping) and stop training
+  if (accuracy < prev_accuracy) {
+    break
+  }
+
+  prev_accuracy <- accuracy
+}
+```
+
+```{r}
+nn
+```
+
+
+```{r}
+#average accuracy
+average_accuracy_regula <- mean(average_accuracies)
+paste("Average Accuracy:", round(average_accuracy_regula, 2))
+```
+
+```{r}
+accuracy_data <- data.frame(
+  Model = c(rep("Simple Model", length(average_accuracy_simple)),
+            rep("Complex Model", length(average_accuracy_complex)),
+            rep("Regularization", length(average_accuracy_regula))),
+  Accuracy = c(average_accuracy_simple, average_accuracy_complex, average_accuracy_regula)
+)
+
+# Sort the data frame by highest accuracy
+accuracy_data <- accuracy_data[order(accuracy_data$Accuracy, decreasing = TRUE), ]
+
+# Print the sorted data frame
+knitr::kable(accuracy_data)
+```
